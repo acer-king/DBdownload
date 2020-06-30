@@ -9,8 +9,6 @@ import subprocess
 import sys
 import time
 from base64 import b64decode
-from ConfigParser import SafeConfigParser
-from optparse import OptionParser
 from dropbox_content_hasher import DropboxContentHasher
 
 import dropbox
@@ -20,7 +18,7 @@ import jsonpickle
 # Got encoded dropbox app key at
 # https://dl-web.dropbox.com/spa/pjlfdak1tmznswp/api_keys.js/public/index.html
 APP_KEY = 'bYeHLWKRctA=|ld63MffhrcyQrbyLTeKvTqxE5cQ3ed1YL2q87GOL/g=='
-LOGGER = 'dbdownload'
+LOGGER = 'App'
 VERSION = '0.0'
 
 # Initialize version from a number given in setup.py.
@@ -63,8 +61,8 @@ def decode_dropbox_key(key):
 
 class DBDownload(object):
 
-    def __init__(self, remote_dir, local_dir, cache_file, sleep=600, prg=None):
-        self._logger = logging.getLogger(LOGGER)
+    def __init__(self, remote_dir, local_dir, cache_file, sleep=600, prg=None,token=None):
+        self._logger = logging
 
         self.remote_dir = remote_dir.lower()
         if not self.remote_dir.startswith(dropboxpath.sep):
@@ -82,30 +80,15 @@ class DBDownload(object):
         self.executable = prg
 
         self._tree = {}
-        self._token = None
+        self._token = token
         self._cursor = None
         self._load_state()
-
-        if self._token is None:
-            key, secret = decode_dropbox_key(APP_KEY)
-            auth_flow = dropbox.DropboxOAuth2FlowNoRedirect(key, secret)
-            auth_url = auth_flow.start()
-            print "1. Go to: " + auth_url
-            print "2. Click \"Allow\" (you might have to log in first)."
-            print "3. Copy the authorization code."
-            auth_code = raw_input("Enter the authorization code here: ").strip()
-            try:
-                oauth_result = auth_flow.finish(auth_code)
-            except Exception:
-                self._logger.error("Invalid authorization code. Exiting.")
-                sys.exit(1)
-            self._token = oauth_result.access_token
 
         try:
             self.client = dropbox.Dropbox(self._token)
         except Exception as e:
             self._logger.exception("Unable to connect to Dropbox.")
-            sys.exit(1)
+            
 
     def reset(self):
         self._logger.debug('resetting local state')
@@ -113,9 +96,9 @@ class DBDownload(object):
         self._cursor = None
         self._save_state()
 
-    def start(self):
+    def start(self,isOnetime=False):
         try:
-            self._monitor()
+            self._monitor(isOnetime)
         except KeyboardInterrupt:
             pass
 
@@ -147,7 +130,7 @@ class DBDownload(object):
         local = os.path.join(self.local_dir, *x)
         return local
 
-    def _monitor(self):
+    def _monitor(self,isOnetime = False):
         self._mkdir(self.local_dir)  # Make sure root directory exists.
 
         tree = {}
@@ -191,6 +174,8 @@ class DBDownload(object):
                 # Done processing delta, sleep and check again.
                 tree = {}
                 self._logger.debug('sleeping for %d seconds' % self.sleep)
+                if(isOnetime):
+                    break
                 time.sleep(self.sleep)
 
     # Launch a program if anything has changed.
@@ -436,23 +421,6 @@ class FakeSecHead(object):
             return self.fp.readline()
 
 
-def parse_config(cfg, opts):
-    parser = SafeConfigParser()
-    try:
-        fp = open(os.path.expanduser(cfg), 'r')
-    except Exception:
-        print 'Warning: can\'t open %s, using default values' % cfg
-        return
-    parser.readfp(FakeSecHead(fp))
-    fp.close()
-
-    for section_name in parser.sections():
-        for name, value in parser.items(section_name):
-            if name not in opts:
-                raise Exception(u'Invalid config file option \'%s\'' % name)
-            opts[name] = value
-
-
 def create_logger(log, verbose):
     FORMAT = '%(asctime)-15s %(message)s'
     console = log.strip() == '-'
@@ -470,65 +438,3 @@ def create_logger(log, verbose):
         fh.setFormatter(formatter)
         logger.addHandler(fh)
     return logger
-
-
-def main():
-    options = {'log': '-', 'config': '~/dbdownload.conf',
-               'cache': '~/.dbdownload.cache', 'interval': 300,
-               'source': None, 'target': None, 'verbose': False, 'reset': False,
-               'exec': None, 'authorizeonly': False}
-
-    # First parse any command line arguments.
-    parser = OptionParser(description='Do one-way Dropbox synchronization')
-    parser.add_option('--interval', '-i', type=int, help='check interval')
-    parser.add_option('--config', '-c', help='configuration file')
-    parser.add_option('--cache', '-a', help='cache file')
-    parser.add_option('--log', '-l', help='logfile (pass - for console)')
-    parser.add_option('--source', '-s',
-                      help='source Dropbox directory to synchronize')
-    parser.add_option('--target', '-t', help='local directory to download to')
-    parser.add_option('--verbose', '-v', action='store_true',
-                      help='enable verbose logging')
-    parser.add_option('--reset', '-r', action='store_true',
-                      help='reset synchronization')
-    parser.add_option('--authorizeonly', '-u', action='store_true',
-                      help='only authorize application and exit')
-    parser.add_option('--exec', '-x',
-                      help='execute program when directory has changed')
-    (opts, args) = parser.parse_args()
-    if args:
-        print 'Leftover command line arguments', args
-        sys.exit(1)
-
-    # Parse configuration file.
-    parse_config((opts.config and [opts.config] or
-                  [options['config']])[0], options)
-
-    # Override parameters from config file with cmdline options.
-    for a in options:
-        v = getattr(opts, a)
-        if v:
-            options[a] = v
-
-    if not options['source'] or not options['target']:
-        error_msg = 'Please provide source and target directories'
-        sys.stderr.write('Error: %s\n' % error_msg)
-        sys.exit(-1)
-
-    locale.setlocale(locale.LC_ALL, 'C')  # To parse time correctly.
-
-    logger = create_logger(options['log'], options['verbose'])
-    logger.info(u'*** DBdownload v%s starting up ***' % VERSION)
-
-    dl = DBDownload(options['source'], options['target'], options['cache'],
-                    options['interval'], options['exec'])
-    if options['reset']:
-        dl.reset()
-
-    if not opts.authorizeonly:
-        dl.start()
-    else:
-        dl.reset()
-
-if __name__ == '__main__':
-    main()
